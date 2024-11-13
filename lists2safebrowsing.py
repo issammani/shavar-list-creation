@@ -34,10 +34,6 @@ from constants import (
     VERS_LARGE_ENTITIES_SEPARATION_STARTED,
     ENTITYLIST_SECTIONS
 )
-from publish2cloud import (
-    publish_to_cloud,
-    request_rs_review
-)
 
 from settings import (
     config,
@@ -271,6 +267,29 @@ def get_domains_from_filters(parser, category_filters,
 
     return output
 
+def process_and_sort_domains(domains, log_file):
+    """Processes and sorts domains, returning those successfully added.
+
+    Args:
+      domains: A set of hostnames to process and add.
+      log_file: A filehandle to the log file.
+
+    Returns:
+      A list of domains that were successfully added.
+    """
+    previous_domain = None
+    output = []
+    added_domains = []
+
+    sorted_domains = sorted(domains)  # Sort domains alphabetically
+
+    for domain in sorted_domains:
+        added = add_domain_to_list(domain, domain, previous_domain, log_file, output)
+        if added:
+            previous_domain = domain
+            added_domains.append(domain)
+
+    return added_domains
 
 def write_safebrowsing_blocklist(domains, output_name, log_file, chunk,
                                  output_file, name, version):
@@ -386,6 +405,16 @@ def process_entitylist(incoming, chunk, output_file, log_file, list_variant):
     print("Entity list(%s): publishing %d items; file size %d"
           % (list_variant, publishing, output_size))
 
+def get_json_list(config, section, domains):
+    companies = set()
+    list_name = config.get(section, 'output')
+    if config.has_option(section, 'version'):
+        list_name = '{}-{}'.format(config.get(section, 'version'), list_name)
+
+    filepath = "normalized-lists/" + list_name + '.json'
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w") as json_file:
+        json.dump(domains, json_file, indent=2)
 
 def process_plugin_blocklist(incoming, chunk, output_file, log_file,
                              list_variant):
@@ -477,6 +506,7 @@ def get_tracker_lists(config, section, chunknum):
         blocked_domains, output_filename, log_file, chunknum,
         output_file, section, version
     )
+    get_json_list(config, section, process_and_sort_domains(blocked_domains, log_file))
     return output_file, log_file
 
 
@@ -499,6 +529,7 @@ def get_entity_lists(config, section, chunknum):
     entitylist = load_json_from_url(
         config, section, "entity_url"
     ).pop('entities')
+    get_json_list(config, section, entitylist)
 
     if channel_needs_separation and list_needs_separation:
         google_entitylist = {}
@@ -690,32 +721,6 @@ def main():
         output_file.close()
     if log_file:
         log_file.close()
-
-    # create and publish versioned lists
-    try:
-        resp = requests.get(GITHUB_API_URL + SHAVAR_PROD_LISTS_BRANCHES_PATH)
-        if resp.status_code == 200:
-            shavar_prod_lists_branches = resp.json()
-
-            shared_state.updateSupportedVersions(shavar_prod_lists_branches, config)
-
-            # Default version
-            publish_to_cloud(config, chunknum)
-
-            start_versioning(config, chunknum, shavar_prod_lists_branches)
-        else:
-            print(f'\n\n*** Unable to get branches from shavar-prod-lists repo ***')
-            print(f'Status code: {resp.status_code}')
-            print(f'Response text: {resp.text}')
-    except requests.exceptions.RequestException as e:
-        print(f'\n\n*** An error occurred while trying to get branches from shavar-prod-lists repo ***')
-        print(f'Error: {str(e)}')
-
-    # We have to request review after all versions of the lists are done uploading
-    # to avoid multiple requests
-    # This function is only needed for remote settings uploads, the function checks the
-    # value of "remote_settings_upload" in the config file
-    request_rs_review()
 
 if __name__ == "__main__":
     main()
